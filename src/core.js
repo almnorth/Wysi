@@ -3,6 +3,7 @@ import document from 'document';
 import settings from './settings.js';
 import { renderToolbar } from './toolbar.js';
 import { enableTags, prepareContent } from './filter.js';
+import { isMarkdownTable, parseMarkdownTable, addResizeHandlesToAll } from './table.js';
 import {
   instances,
   placeholderClass,
@@ -96,6 +97,9 @@ function init(options) {
       wrapper.appendChild(editor);
       field.before(wrapper);
 
+      // Add column resize handles to existing tables
+      addResizeHandlesToAll(editor);
+
       // Apply configuration
       configure(wrapper, options);
 
@@ -152,6 +156,7 @@ function updateContent(textarea, editor, instanceId, rawContent, setEditorConten
 
   if (setEditorContent === true) {
     editor.innerHTML = content;
+    addResizeHandlesToAll(editor);
   }
 
   textarea.value = content;
@@ -195,14 +200,40 @@ function setContent(selector, content) {
  * Clean up content before pasting it in an editor.
  * @param {object} event The browser's paste event.
  */
+function handlePastedImage(event) {
+  const { editor } = findInstance(event.target);
+  const clipboardData = event.clipboardData;
+
+  if (!editor || !clipboardData) return false;
+
+  const imageFile = Array.from(clipboardData.files).find(f => f.type.startsWith('image/'));
+  if (!imageFile) return false;
+
+  event.preventDefault();
+
+  const reader = new FileReader();
+  reader.onload = () => {
+    editor.focus();
+    execCommand('insertHTML', `<img src="${reader.result}" alt="">`);
+  };
+  reader.readAsDataURL(imageFile);
+
+  return true;
+}
+
 function cleanPastedContent(event) {
   const { editor, nodes } = findInstance(event.target);
   const clipboardData = event.clipboardData;
 
-  if (editor && clipboardData.types.includes('text/html')) {
+  if (handlePastedImage(event)) return;
+
+  if (!editor) return;
+
+  const instanceId = getInstanceId(editor);
+  const allowedTags = instances[instanceId].allowedTags;
+
+  if (clipboardData.types.includes('text/html')) {
     const pasted = clipboardData.getData('text/html');
-    const instanceId = getInstanceId(editor);
-    const allowedTags = instances[instanceId].allowedTags;
     let content = prepareContent(pasted, allowedTags);
 
     // Detect a heading tag in the current selection
@@ -234,8 +265,23 @@ function cleanPastedContent(event) {
       });
     }
 
+    // Add resize handles to pasted tables
+    addResizeHandlesToAll(editor);
+
     // Prevent the default paste action
     event.preventDefault();
+
+  // Handle plain text paste — detect markdown tables
+  } else if (allowedTags['table'] && clipboardData.types.includes('text/plain')) {
+    const plainText = clipboardData.getData('text/plain');
+
+    if (isMarkdownTable(plainText)) {
+      const tableHtml = parseMarkdownTable(plainText);
+      const content = prepareContent(tableHtml, allowedTags);
+      execCommand('insertHTML', content);
+      addResizeHandlesToAll(editor);
+      event.preventDefault();
+    }
   }
 }
 
